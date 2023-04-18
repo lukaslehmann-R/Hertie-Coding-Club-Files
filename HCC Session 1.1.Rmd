@@ -1,0 +1,214 @@
+---
+title: "HCC Session - LL1"
+author: "Lukas Lehmann"
+date: "2023-04-18"
+output: html_document
+---
+
+## Loading in packages and authorizing rtweet
+
+So the first thing we want to do is load in the packages we'll be using to scrape and manipulate our data. The most important of those is rtweet, which is the one we'll be using to interact with the Twitter API.
+
+In order to scrape tweets, you'll need a Twitter developer account and have to make a Twitter app. This is actually a pretty simple process (and won't require any coding). Here's a step-by-step guide: https://jtr13.github.io/cc21fall2/scrape-twitter-data-using-r.html
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+```
+
+
+```{r}
+pacman::p_load(rtweet, tidyverse, ggplot2, utils, tm, SnowballC, caTools, 
+               rpart, topicmodels, tidytext, wordcloud, lexicon, reshape2,
+               sentimentr)
+
+# auth <- rtweet_app()
+# auth_as(auth)
+```
+
+Running the code above (without the #'s) will prompt a dialogue box to pop up on your screen asking you for a bearer token. You can find that on the Twitter developer page. I made the last two lines into comments so that this can be knit into HTML smoothly.
+
+## Scraping Tweets
+
+We'll be make two datasets: one containing tweets just from US President Biden's Twitter account and the other scraping the most recent (English language) tweets from all Twitter accounts mentioning the word "green." 
+
+```{r scrape}
+
+# green <- search_tweets("green", n = 2000, lang = "en", retryonratelimit = TRUE)
+# biden_tweets <- get_timeline("POTUS", n = 2000, retryonratelimit = TRUE)
+
+biden_tweets <- read_csv("https://raw.githubusercontent.com/lukaslehmann-R/common_files/main/biden_tweets.csv")
+
+green <- read_csv("https://raw.githubusercontent.com/lukaslehmann-R/common_files/main/green.csv")
+
+```
+
+I turned the first two lines into comments for the same reason as earlier. The third and fourth lines will load in the same datasets (although the data within will different because Biden and other Twitter users will continue to tweet)
+
+# Viz 1 
+
+Now that we have our tweets, let's construct a basic time-series graph of the Biden tweets
+
+```{r}
+biden_tweets %>%
+  ts_plot("2 weeks") +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(plot.title = ggplot2::element_text(face = "bold")) +
+  ggplot2::labs(
+    x = NULL, y = "Number of Tweets",
+    title = "Frequency of Biden tweets",
+    subtitle = "Tweet counts aggregated using two-week intervals",
+    caption = "\nSource: Data collected from Twitter's REST API via rtweet"
+  ) +
+  geom_point()
+```
+## Topic Modeling 
+
+There's a lot that goes into explaining what a topic model is. One kind of topic model is called LDA, and you can read all about it here: https://www.tidytextmining.com/topicmodeling.html
+
+```{r topic model}
+#Make a corpus of documents using just the full_text part of green tweets
+
+corpus1 <- Corpus(VectorSource(green$full_text))
+
+# Now we need to clean our text a bit. Change to lower case and remove punctuation!
+
+corpus1 <- tm_map(corpus1, tolower)
+corpus1 <- tm_map(corpus1, removePunctuation)
+
+# We need to remove stop words to get meaningful results from this exercise. We'll remove words like
+# "me", "is", "was"
+
+stopwords("english")[1:50]
+corpus1 <- tm_map(corpus1, removeWords, (stopwords("english")))
+
+# We need to clean the words in the corpus further by "stemming" words
+# A word like "understand" and "understands" will both become "understand" for example
+
+corpus1 <- tm_map(corpus1, stemDocument)
+
+#creates a document term matrix, which is necessary for building a topic model
+
+DTM1 <- DocumentTermMatrix(corpus1)
+
+#Here we can see the most frequently used terms
+
+frequent_ge_20 <- findFreqTerms(DTM1, lowfreq = 100)
+frequent_ge_20
+
+```
+
+
+```{r topic model continued}
+
+#Let's create the topic model! We'll start with 5 topics
+
+green_lda1 <- LDA(DTM1, k = 7, control = list(seed = 1234))
+green_lda1
+
+green_topics1 <- tidy(green_lda1, matrix = "beta")
+
+green_top_terms1 <- green_topics1 %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>% 
+  ungroup() %>%
+  arrange(topic, -beta)
+
+```
+# Viz 2
+
+```{r}
+green_top_terms1 %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(beta, term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered()
+```
+
+Above we have our topic model and the top terms associated with each. We can see that topic 3 has to do with basketball, topic 5 may be about healthy eating, and topic 4 seems to be about clean energy.
+
+## Word Cloud
+
+Now let's go back to the Biden tweets and make a word cloud. What's a word cloud? Read about it here: https://towardsdatascience.com/create-a-word-cloud-with-r-bde3e7422e8a 
+
+```{r warning = FALSE, message = FALSE}
+
+words_data <- biden_tweets %>% 
+  select(text)%>%
+  unnest_tokens(word, text) 
+
+#let's get rid of some words associated with links and things that might cause errors
+
+words_data <- words_data %>% 
+  filter(!word %in% c('https', 't.co', 'he\'s', 'i\'m', 'it\'s'))
+
+#let's get rid of stopwords
+
+words_data2 <- words_data %>%
+  anti_join(stop_words) %>%
+  count(word, sort = TRUE)
+
+
+
+```
+## Viz 3
+
+```{r  warning = FALSE, message = FALSE}
+#Basic word cloud
+
+wordcloud(words_data2$word,words_data2$n, max.words = 200)
+```
+
+## Viz 4
+
+Now let's make a word cloud from those tweets but highlight which words are positive and which are negative 
+
+```{r warning = FALSE, message = FALSE}
+words_data2 %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(sentiment, sort = TRUE)
+
+profanity_list <- unique(tolower(lexicon::profanity_alvarez))
+
+words_data %>% 
+  filter(!word %in% c('https', 't.co', 'he\'s', 'i\'m', 'it\'s', profanity_list)) %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("red", "blue"),
+                   max.words = Inf)
+```
+
+## Sentiment Analysis
+
+Now we are going to see how many of President Biden's tweets can be classified as positive, neutral, and negative. sentimentr is the main package in use here
+```{r}
+tweet_sentences_data <- sentiment(get_sentences(biden_tweets$text)) %>% 
+  group_by(element_id) %>% 
+  summarize(meanSentiment = mean(sentiment))
+
+#objects representing the number of positive, neutral, and negative tweets from President Biden
+
+negative_t <- sum(tweet_sentences_data$meanSentiment < 0)
+neutral_t <- sum(tweet_sentences_data$meanSentiment == 0)
+positive_t <- sum(tweet_sentences_data$meanSentiment > 0)
+
+#creating vectors for a dataframe
+
+type_tweet <- c("Negative", "Neutral", "Postive")
+values <- c(negative_t, neutral_t, positive_t)
+
+df_sentiment <- data.frame(type_tweet, values)
+
+```
+
+## Viz 5
+
+```{r}
+p<-ggplot(data=df_sentiment, aes(x=type_tweet, y=values, fill=type_tweet)) +
+  geom_bar(stat="identity")
+p
+```
+
+That's it for today!! 
